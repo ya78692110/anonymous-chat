@@ -1,0 +1,13 @@
+{
+  "name": "Anonymous",
+  "short_name": "Anonymous",
+  "description": "Anonymous ID-based real-time chat. No phone. No email.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#030706",
+  "theme_color": "#050a09",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

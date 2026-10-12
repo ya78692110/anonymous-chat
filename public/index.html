@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+  <meta name="theme-color" content="#050a09">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Anonymous</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="app">
+
+    <!-- ============ AUTH ============ -->
+    <section id="view-auth" class="view" hidden>
+      <div class="auth-wrap">
+        <div class="eyebrow">Anonymous</div>
+        <h1 class="title">No profiles.<br>Just a signal.</h1>
+
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-mode="login" role="tab">Log in</button>
+          <button class="tab" data-mode="register" role="tab">Create ID</button>
+        </div>
+
+        <form id="auth-form" autocomplete="off">
+          <label class="field">
+            <span>Unique ID</span>
+            <input id="auth-uid" type="text" placeholder="e.g. GHOST_407" maxlength="20"
+                   autocapitalize="characters" spellcheck="false" required>
+          </label>
+          <label class="field">
+            <span>Password</span>
+            <input id="auth-pass" type="password" placeholder="At least 6 characters" minlength="6" required>
+          </label>
+          <label class="field" id="bio-field" hidden>
+            <span>Tagline (optional)</span>
+            <input id="auth-bio" type="text" placeholder="A line others will see" maxlength="60">
+          </label>
+          <p id="auth-error" class="error" role="alert"></p>
+          <button id="auth-submit" class="btn-primary" type="submit">Log in</button>
+        </form>
+
+        <p class="footnote">No phone number. No email. Your identity stays hidden.</p>
+      </div>
+    </section>
+
+    <!-- ============ DASHBOARD ============ -->
+    <section id="view-list" class="view" hidden>
+      <header class="list-head">
+        <div class="row-between">
+          <span class="eyebrow">Anonymous</span>
+          <button id="logout" class="link-btn">Log out</button>
+        </div>
+        <div class="row-between align-end">
+          <h1 class="title">Choose someone to chat</h1>
+          <span id="online-count" class="meta">0 online</span>
+        </div>
+      </header>
+
+      <ul id="chat-list" class="chat-list"></ul>
+      <p id="empty-list" class="empty" hidden>Nobody here yet. Share the app and wait for a signal.</p>
+
+      <footer class="list-foot">
+        <p class="footnote">Your identity stays hidden</p>
+        <button id="random-chat" class="btn-primary">Random chat</button>
+      </footer>
+    </section>
+
+    <!-- ============ CHAT ROOM ============ -->
+    <section id="view-chat" class="view" hidden>
+      <header class="chat-head">
+        <button id="back" class="icon-btn" aria-label="Back">←</button>
+        <div class="who">
+          <div id="chat-name" class="name">—</div>
+          <div class="status"><i id="chat-dot" class="dot"></i><span id="chat-status">Anonymous · Offline</span></div>
+        </div>
+        <button id="menu-btn" class="icon-btn small" aria-label="Options">•••</button>
+      </header>
+
+      <div class="subbar">
+        <span class="badge">Private</span>
+        <span class="sub-text">Messages disappear after 24 hours</span>
+        <button id="all-chats" class="link-btn right">All chats</button>
+      </div>
+
+      <div id="thread" class="thread" aria-live="polite"></div>
+
+      <form id="composer" class="composer" autocomplete="off">
+        <input id="msg-input" type="text" placeholder="Type a message" maxlength="1000" enterkeyhint="send">
+        <button class="send-btn" type="submit" aria-label="Send">↗</button>
+      </form>
+    </section>
+
+    <!-- ============ OPTIONS SHEET ============ -->
+    <div id="sheet" class="sheet" hidden>
+      <div class="sheet-card">
+        <button id="act-clear" class="sheet-btn">Clear this chat</button>
+        <button id="act-block" class="sheet-btn danger">Block this ID</button>
+        <button id="act-cancel" class="sheet-btn muted">Cancel</button>
+      </div>
+    </div>
+
+    <div id="toast" class="toast" hidden></div>
+  </main>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
