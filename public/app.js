@@ -7,9 +7,10 @@
     token: localStorage.getItem(TOKEN_KEY),
     me: null,
     socket: null,
-    online: new Set(),
+    online: new Set(),   // online status of MY contacts only (server never sends anyone else)
     chats: [],
-    current: null,      // uid of open conversation
+    current: null,       // uid of open conversation
+    currentIsContact: false,
     mode: 'login',
     typingTimer: null,
   };
@@ -20,6 +21,37 @@
     if (cls) n.className = cls;
     if (text != null) n.textContent = text; // textContent => no XSS from user content
     return n;
+  }
+  // Avatar: a unique, symmetric pixel glyph generated from the ID (no photos, no names)
+  function hashStr(s) {
+    let h = 2166136261;
+    for (const c of s) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); }
+    return h >>> 0;
+  }
+  function fillAvatar(node, uid) {
+    const NS = 'http://www.w3.org/2000/svg';
+    const seed = hashStr(uid + '#glyph');
+    node.textContent = '';
+    node.style.setProperty('--h', String(hashStr(uid) % 360));
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 5 5');
+    svg.setAttribute('aria-hidden', 'true');
+    let any = false;
+    const cell = (x, y) => {
+      const r = document.createElementNS(NS, 'rect');
+      r.setAttribute('x', x); r.setAttribute('y', y);
+      r.setAttribute('width', 1); r.setAttribute('height', 1);
+      r.setAttribute('fill', 'currentColor');
+      svg.append(r); any = true;
+    };
+    for (let row = 0; row < 5; row++) {
+      for (let col = 0; col < 3; col++) {
+        if ((seed >> (row * 3 + col)) & 1) { cell(col, row); if (col < 2) cell(4 - col, row); }
+      }
+    }
+    if (!any) cell(2, 2);
+    node.append(svg);
+    return node;
   }
   const pad = (n) => String(n).padStart(2, '0');
   const hhmm = (t) => { const d = new Date(t); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
@@ -85,6 +117,7 @@
     try { if (!silent && state.token) await api('/api/logout', { method: 'POST' }); } catch (_) {}
     localStorage.removeItem(TOKEN_KEY);
     state.token = null; state.me = null; state.current = null;
+    state.online = new Set(); state.chats = [];
     if (state.socket) { state.socket.disconnect(); state.socket = null; }
     show('auth');
   }
@@ -98,8 +131,18 @@
 
     s.on('connect_error', (err) => { if (err.message === 'unauthorized') signOut(true); });
 
+    // Initial list: which of MY contacts are online right now
     s.on('presence', ({ online }) => {
       state.online = new Set(online);
+      renderOnlineCount();
+      if (!$('view-list').hidden) renderList();
+      if (state.current) renderChatStatus();
+    });
+
+    // A single contact came online / went offline (server only sends this for contacts)
+    s.on('presence:update', ({ uid, online }) => {
+      if (online) state.online.add(uid); else state.online.delete(uid);
+      if (uid === state.current) state.currentIsContact = true;
       renderOnlineCount();
       if (!$('view-list').hidden) renderList();
       if (state.current) renderChatStatus();
@@ -138,7 +181,7 @@
     state.chats.forEach((c) => {
       const li = el('li');
       const btn = el('button', 'chat-item');
-      const av = el('div', 'avatar', c.uid.slice(0, 2));
+      const av = fillAvatar(el('div', 'avatar'), c.uid);
       av.append(el('i', 'dot' + (state.online.has(c.uid) ? ' on' : '')));
       const body = el('div', 'item-body');
       body.append(el('div', 'item-name', c.uid), el('div', 'item-sub', c.last_text || c.bio || 'Say hello'));
@@ -150,6 +193,16 @@
       li.append(btn); ul.append(li);
     });
   }
+
+  // Start a chat by typing someone's exact ID (there is no public user list)
+  $('find-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const input = $('find-uid');
+    const uid = input.value.trim().toUpperCase();
+    if (!uid) return;
+    openChat(uid).then((ok) => { if (ok) input.value = ''; });
+  });
+
   $('random-chat').addEventListener('click', async () => {
     try { const { uid } = await api('/api/random'); openChat(uid); }
     catch (err) { toast(err.message); }
@@ -158,9 +211,12 @@
   /* ------------------------------ chat room ------------------------------ */
   let lastDay = null;
   function renderChatStatus() {
-    const on = state.online.has(state.current);
+    // Online status is shown only for contacts; strangers stay fully anonymous
+    const on = state.currentIsContact && state.online.has(state.current);
     $('chat-dot').classList.toggle('on', on);
-    $('chat-status').textContent = `Anonymous · ${on ? 'Online' : 'Offline'}`;
+    $('chat-status').textContent = state.currentIsContact
+      ? `Anonymous · ${on ? 'Online' : 'Offline'}`
+      : 'Anonymous';
   }
   function appendMessage(m) {
     const thread = $('thread');
@@ -177,16 +233,22 @@
     try {
       const data = await api(`/api/messages/${encodeURIComponent(uid)}`);
       state.current = data.user.uid;
+      state.currentIsContact = !!data.user.contact;
+      if (state.currentIsContact) {
+        if (data.user.online) state.online.add(state.current); else state.online.delete(state.current);
+      }
       $('chat-name').textContent = data.user.uid;
+      fillAvatar($('chat-avatar'), data.user.uid);
       $('thread').textContent = ''; lastDay = null;
       data.messages.forEach(appendMessage);
       renderChatStatus();
       show('chat');
       $('msg-input').focus({ preventScroll: true });
-    } catch (err) { toast(err.message); }
+      return true;
+    } catch (err) { toast(err.message); return false; }
   }
   function closeChat() {
-    state.current = null;
+    state.current = null; state.currentIsContact = false;
     show('list'); loadChats();
   }
   $('back').addEventListener('click', closeChat);
@@ -207,7 +269,9 @@
   let lastTyping = 0;
   $('msg-input').addEventListener('input', () => {
     const t = Date.now();
-    if (state.current && t - lastTyping > 1200) { lastTyping = t; state.socket.emit('typing', { to: state.current }); }
+    if (state.current && state.currentIsContact && t - lastTyping > 1200) {
+      lastTyping = t; state.socket.emit('typing', { to: state.current });
+    }
   });
 
   /* --------------------------- options sheet ---------------------------- */
