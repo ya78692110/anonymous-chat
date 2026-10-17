@@ -1,14 +1,20 @@
 /**
- * Anonymous ID-based real-time chat — backend
+ * Anonymous ID-based real-time chat — backend (private contacts version)
  * Express (REST auth + data) + Socket.io (live delivery) + SQLite (storage)
- * No phone numbers, no emails: just a self-chosen Unique ID + password.
+ *
+ * Privacy model (WhatsApp-like):
+ *  - There is NO public user directory. Nobody can list other users.
+ *  - You only see people you have chatted with ("contacts").
+ *  - To start a chat you must know the other person's exact Unique ID,
+ *    or use Random chat (which reveals one random ID at a time).
+ *  - Online status / typing is only shared between contacts.
  */
 const express = require('express');
 const http = require('http');
 const path = require('path');
 const crypto = require('crypto');
-const bcrypt = require('bcryptjs'); // pure-JS bcrypt, same hashing scheme, no native build
-const { DatabaseSync } = require('node:sqlite'); // built into Node 22.13+ / 24, no native build needed
+const bcrypt = require('bcryptjs');
+const { DatabaseSync } = require('node:sqlite');
 const { Server } = require('socket.io');
 
 const PORT = process.env.PORT || 3000;
@@ -47,6 +53,21 @@ db.exec(`
     blocked_id INTEGER NOT NULL,
     PRIMARY KEY (blocker_id, blocked_id)
   );
+  -- People each user has chatted with. Only these appear in a user's chat list.
+  CREATE TABLE IF NOT EXISTS contacts (
+    owner_id INTEGER NOT NULL,
+    contact_id INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (owner_id, contact_id)
+  );
+`);
+
+// Backfill contacts for conversations that existed before this update
+db.exec(`
+  INSERT OR IGNORE INTO contacts (owner_id, contact_id, created_at)
+    SELECT DISTINCT from_id, to_id, strftime('%s','now')*1000 FROM messages;
+  INSERT OR IGNORE INTO contacts (owner_id, contact_id, created_at)
+    SELECT DISTINCT to_id, from_id, strftime('%s','now')*1000 FROM messages;
 `);
 
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
@@ -74,13 +95,35 @@ const isBlocked = (a, b) =>
   !!db.prepare(`SELECT 1 FROM blocks WHERE (blocker_id=@a AND blocked_id=@b) OR (blocker_id=@b AND blocked_id=@a)`)
     .get({ a, b });
 
-// Tiny in-memory rate limiter for login/register (per IP)
+/* ---------------------------- Contact helpers --------------------------- */
+const isContact = (a, b) =>
+  !!db.prepare('SELECT 1 FROM contacts WHERE owner_id=? AND contact_id=?').get(a, b);
+
+// UIDs of people this user has chatted with (and not blocked either way)
+const contactUids = (id) =>
+  db.prepare(`
+    SELECT u.uid FROM contacts c JOIN users u ON u.id = c.contact_id
+    WHERE c.owner_id = @me
+      AND u.id NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id=@me)
+      AND u.id NOT IN (SELECT blocker_id FROM blocks WHERE blocked_id=@me)`)
+    .all({ me: id }).map((r) => r.uid);
+
+// Make two users contacts of each other. Returns true if something new was added.
+function addContacts(a, b) {
+  const t = now();
+  const st = db.prepare('INSERT OR IGNORE INTO contacts (owner_id, contact_id, created_at) VALUES (?,?,?)');
+  const r1 = st.run(a, b, t);
+  const r2 = st.run(b, a, t);
+  return Number(r1.changes) > 0 || Number(r2.changes) > 0;
+}
+
+// Tiny in-memory rate limiter (per key)
 const attempts = new Map();
-function limited(ip) {
-  const rec = attempts.get(ip) || { n: 0, t: now() };
+function limited(key, max = 30) {
+  const rec = attempts.get(key) || { n: 0, t: now() };
   if (now() - rec.t > 15 * 60 * 1000) { rec.n = 0; rec.t = now(); }
-  rec.n++; attempts.set(ip, rec);
-  return rec.n > 30;
+  rec.n++; attempts.set(key, rec);
+  return rec.n > max;
 }
 
 /* ------------------------------ Express app ---------------------------- */
@@ -100,7 +143,7 @@ function auth(req, res, next) {
 }
 
 app.post('/api/register', (req, res) => {
-  if (limited(req.ip)) return res.status(429).json({ error: 'Too many attempts. Try later.' });
+  if (limited('auth:' + req.ip)) return res.status(429).json({ error: 'Too many attempts. Try later.' });
   const uid = String(req.body.uid || '').trim().toUpperCase();
   const password = String(req.body.password || '');
   const bio = String(req.body.bio || '').trim().slice(0, 60);
@@ -116,7 +159,7 @@ app.post('/api/register', (req, res) => {
 });
 
 app.post('/api/login', (req, res) => {
-  if (limited(req.ip)) return res.status(429).json({ error: 'Too many attempts. Try later.' });
+  if (limited('auth:' + req.ip)) return res.status(429).json({ error: 'Too many attempts. Try later.' });
   const uid = String(req.body.uid || '').trim().toUpperCase();
   const password = String(req.body.password || '');
   const u = db.prepare('SELECT * FROM users WHERE uid = ?').get(uid);
@@ -133,7 +176,7 @@ app.post('/api/logout', auth, (req, res) => {
 
 app.get('/api/me', auth, (req, res) => res.json({ uid: req.user.uid, bio: req.user.bio }));
 
-// Dashboard list: people you've talked to first, then everyone else
+// Dashboard list: ONLY people you have chatted with (your contacts)
 app.get('/api/chats', auth, (req, res) => {
   const cut = now() - TTL_MS;
   const pair = `((m.from_id=@me AND m.to_id=u.id) OR (m.from_id=u.id AND m.to_id=@me)) AND m.created_at>@cut`;
@@ -143,19 +186,27 @@ app.get('/api/chats', auth, (req, res) => {
       (SELECT created_at FROM messages m WHERE ${pair} ORDER BY m.id DESC LIMIT 1) AS last_at,
       (SELECT COUNT(*) FROM messages m WHERE m.from_id=u.id AND m.to_id=@me
          AND m.read_at IS NULL AND m.created_at>@cut) AS unread
-    FROM users u
-    WHERE u.id != @me
+    FROM contacts c JOIN users u ON u.id = c.contact_id
+    WHERE c.owner_id = @me
       AND u.id NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id=@me)
       AND u.id NOT IN (SELECT blocker_id FROM blocks WHERE blocked_id=@me)
-    ORDER BY (last_at IS NULL), last_at DESC, u.last_seen DESC
-    LIMIT 50`).all({ me: req.user.id, cut });
+    ORDER BY (last_at IS NULL), last_at DESC, c.created_at DESC
+    LIMIT 200`).all({ me: req.user.id, cut });
   res.json(rows.map((r) => ({ ...r, online: isOnline(r.uid) })));
 });
 
-// Message history for one conversation (last 24h only)
+// Message history for one conversation (last 24h only).
+// Works for a contact, or for a brand-new person whose exact ID you typed.
 app.get('/api/messages/:uid', auth, (req, res) => {
-  const other = db.prepare('SELECT id, uid, bio FROM users WHERE uid = ?').get(String(req.params.uid).toUpperCase());
-  if (!other) return res.status(404).json({ error: 'User not found' });
+  const other = db.prepare('SELECT id, uid, bio FROM users WHERE uid = ?').get(String(req.params.uid).trim().toUpperCase());
+  if (!other || isBlocked(req.user.id, Number(other.id))) return res.status(404).json({ error: 'User not found' });
+  if (Number(other.id) === req.user.id) return res.status(400).json({ error: 'That is your own ID' });
+
+  const contact = isContact(req.user.id, Number(other.id));
+  // Throttle ID guessing: looking up people who are not yet your contacts is limited
+  if (!contact && limited('find:' + req.user.id, 60))
+    return res.status(429).json({ error: 'Too many lookups. Try later.' });
+
   const rows = db.prepare(`
     SELECT m.id, fu.uid AS "from", tu.uid AS "to", m.text, m.created_at AS at
     FROM messages m JOIN users fu ON fu.id=m.from_id JOIN users tu ON tu.id=m.to_id
@@ -164,7 +215,8 @@ app.get('/api/messages/:uid', auth, (req, res) => {
   db.prepare('UPDATE messages SET read_at=? WHERE from_id=? AND to_id=? AND read_at IS NULL')
     .run(now(), other.id, req.user.id);
   res.json({
-    user: { uid: other.uid, bio: other.bio, online: isOnline(other.uid) },
+    // online status is revealed only for contacts
+    user: { uid: other.uid, bio: other.bio, contact, online: contact ? isOnline(other.uid) : false },
     messages: rows.map((r) => ({ ...r })),
   });
 });
@@ -184,13 +236,17 @@ app.post('/api/block/:uid', auth, (req, res) => {
   res.json({ ok: true });
 });
 
-// Random chat: prefer someone online, fall back to anyone
+// Random chat: picks ONE random person you have not talked to yet (prefers online).
+// It reveals only that single ID, never a list.
 app.get('/api/random', auth, (req, res) => {
+  if (limited('rand:' + req.user.id, 40)) return res.status(429).json({ error: 'Too many tries. Try later.' });
   const all = db.prepare(`
     SELECT uid FROM users WHERE id != @me
       AND id NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id=@me)
-      AND id NOT IN (SELECT blocker_id FROM blocks WHERE blocked_id=@me)`).all({ me: req.user.id }).map((r) => r.uid);
-  if (!all.length) return res.status(404).json({ error: 'Nobody else is here yet' });
+      AND id NOT IN (SELECT blocker_id FROM blocks WHERE blocked_id=@me)
+      AND id NOT IN (SELECT contact_id FROM contacts WHERE owner_id=@me)`)
+    .all({ me: req.user.id }).map((r) => r.uid);
+  if (!all.length) return res.status(404).json({ error: 'No new people available right now' });
   const online = all.filter(isOnline);
   const pool = online.length ? online : all;
   res.json({ uid: pool[Math.floor(Math.random() * pool.length)] });
@@ -199,7 +255,11 @@ app.get('/api/random', auth, (req, res) => {
 /* ------------------------------- Socket.io ------------------------------ */
 const sockets = new Map(); // uid -> Set(socket.id)
 const isOnline = (uid) => (sockets.get(uid)?.size || 0) > 0;
-const broadcastPresence = () => io.emit('presence', { online: [...sockets.keys()] });
+
+// Tell only this user's contacts that their status changed (no global broadcast)
+function announcePresence(uid, userId, online) {
+  contactUids(userId).forEach((c) => io.to(`u:${c}`).emit('presence:update', { uid, online }));
+}
 
 io.use((socket, next) => {
   const user = userFromToken(socket.handshake.auth?.token);
@@ -211,17 +271,21 @@ io.use((socket, next) => {
 io.on('connection', (socket) => {
   const me = socket.user;
   socket.join(`u:${me.uid}`); // personal room: every device of this ID joins it
+  const wasOnline = isOnline(me.uid);
   if (!sockets.has(me.uid)) sockets.set(me.uid, new Set());
   sockets.get(me.uid).add(socket.id);
-  broadcastPresence();
+
+  // This socket learns which of ITS OWN contacts are online; contacts learn about me.
+  socket.emit('presence', { online: contactUids(me.id).filter(isOnline) });
+  if (!wasOnline) announcePresence(me.uid, me.id, true);
 
   let sentTimes = [];
   socket.on('message:send', (payload, ack) => {
     ack = typeof ack === 'function' ? ack : () => {};
     const text = String(payload?.text || '').trim().slice(0, MAX_MSG);
     const to = db.prepare('SELECT id, uid FROM users WHERE uid = ?').get(String(payload?.to || '').toUpperCase());
-    if (!text || !to) return ack({ error: 'Invalid message' });
-    if (isBlocked(me.id, to.id)) return ack({ error: 'You cannot message this user' });
+    if (!text || !to || Number(to.id) === me.id) return ack({ error: 'Invalid message' });
+    if (isBlocked(me.id, Number(to.id))) return ack({ error: 'You cannot message this user' });
 
     // flood control: max 15 messages / 10 s
     const t = now();
@@ -229,10 +293,18 @@ io.on('connection', (socket) => {
     if (sentTimes.length >= 15) return ack({ error: 'Slow down' });
     sentTimes.push(t);
 
+    // First message creates the contact for BOTH sides (so the receiver sees you in their list)
+    const isNew = addContacts(me.id, Number(to.id));
+
     const info = db.prepare('INSERT INTO messages (from_id, to_id, text, created_at) VALUES (?,?,?,?)')
       .run(me.id, to.id, text, t);
     const msg = { id: Number(info.lastInsertRowid), from: me.uid, to: to.uid, text, at: t };
     io.to(`u:${to.uid}`).to(`u:${me.uid}`).emit('message:new', msg); // recipient + sender's other devices
+
+    if (isNew) { // exchange online status now that they are contacts
+      io.to(`u:${to.uid}`).emit('presence:update', { uid: me.uid, online: true });
+      io.to(`u:${me.uid}`).emit('presence:update', { uid: to.uid, online: isOnline(to.uid) });
+    }
     ack({ ok: true, msg });
   });
 
@@ -243,15 +315,19 @@ io.on('connection', (socket) => {
       .run(now(), other.id, me.id);
   });
 
+  // Typing indicator: only between contacts who have not blocked each other
   socket.on('typing', ({ to } = {}) => {
-    if (typeof to === 'string') io.to(`u:${to.toUpperCase()}`).emit('typing', { from: me.uid });
+    if (typeof to !== 'string') return;
+    const other = db.prepare('SELECT id, uid FROM users WHERE uid = ?').get(to.toUpperCase());
+    if (!other || !isContact(me.id, Number(other.id)) || isBlocked(me.id, Number(other.id))) return;
+    io.to(`u:${other.uid}`).emit('typing', { from: me.uid });
   });
 
   socket.on('disconnect', () => {
     const set = sockets.get(me.uid);
     if (set) { set.delete(socket.id); if (!set.size) sockets.delete(me.uid); }
     db.prepare('UPDATE users SET last_seen=? WHERE id=?').run(now(), me.id);
-    broadcastPresence();
+    if (!isOnline(me.uid)) announcePresence(me.uid, me.id, false);
   });
 });
 
