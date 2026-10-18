@@ -5,8 +5,7 @@
  * Privacy model (WhatsApp-like):
  *  - There is NO public user directory. Nobody can list other users.
  *  - You only see people you have chatted with ("contacts").
- *  - To start a chat you must know the other person's exact Unique ID,
- *    or use Random chat (which reveals one random ID at a time).
+ *  - To start a chat you must know the other person's exact Unique ID.
  *  - Online status / typing is only shared between contacts.
  */
 const express = require('express');
@@ -25,12 +24,31 @@ const MAX_MSG = 1000;
 /* ------------------------------ Database ------------------------------ */
 const db = new DatabaseSync(path.join(__dirname, 'chat.db'));
 db.exec('PRAGMA journal_mode = WAL');
+
+// One-time fresh start: when DB_VERSION changes, all old data is wiped on the next boot.
+// Bump this number any time you want to reset every user / message again.
+const DB_VERSION = '2';
+db.exec('CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)');
+const dbVer = db.prepare("SELECT v FROM meta WHERE k = 'version'").get();
+if (!dbVer || dbVer.v !== DB_VERSION) {
+  db.exec(`
+    DROP TABLE IF EXISTS contacts;
+    DROP TABLE IF EXISTS blocks;
+    DROP TABLE IF EXISTS messages;
+    DROP TABLE IF EXISTS sessions;
+    DROP TABLE IF EXISTS users;
+  `);
+  db.prepare("INSERT OR REPLACE INTO meta (k, v) VALUES ('version', ?)").run(DB_VERSION);
+  console.log('Database reset: starting fresh (version ' + DB_VERSION + ')');
+}
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     uid TEXT NOT NULL UNIQUE COLLATE NOCASE,
     hash TEXT NOT NULL,
     bio TEXT NOT NULL DEFAULT '',
+    color INTEGER,
     created_at INTEGER NOT NULL,
     last_seen INTEGER NOT NULL
   );
@@ -62,14 +80,6 @@ db.exec(`
   );
 `);
 
-// Backfill contacts for conversations that existed before this update
-db.exec(`
-  INSERT OR IGNORE INTO contacts (owner_id, contact_id, created_at)
-    SELECT DISTINCT from_id, to_id, strftime('%s','now')*1000 FROM messages;
-  INSERT OR IGNORE INTO contacts (owner_id, contact_id, created_at)
-    SELECT DISTINCT to_id, from_id, strftime('%s','now')*1000 FROM messages;
-`);
-
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
 const now = () => Date.now();
 
@@ -87,9 +97,9 @@ function createSession(userId) {
 }
 function userFromToken(token) {
   if (!token) return null;
-  const row = db.prepare(`SELECT u.id, u.uid, u.bio FROM sessions s JOIN users u ON u.id = s.user_id
+  const row = db.prepare(`SELECT u.id, u.uid, u.bio, u.color FROM sessions s JOIN users u ON u.id = s.user_id
                           WHERE s.token_hash = ?`).get(sha(token));
-  return row ? { id: Number(row.id), uid: row.uid, bio: row.bio } : null;
+  return row ? { id: Number(row.id), uid: row.uid, bio: row.bio, color: row.color == null ? null : Number(row.color) } : null;
 }
 const isBlocked = (a, b) =>
   !!db.prepare(`SELECT 1 FROM blocks WHERE (blocker_id=@a AND blocked_id=@b) OR (blocker_id=@b AND blocked_id=@a)`)
@@ -155,7 +165,7 @@ app.post('/api/register', (req, res) => {
   const hash = bcrypt.hashSync(password, 12);
   const info = db.prepare('INSERT INTO users (uid, hash, bio, created_at, last_seen) VALUES (?,?,?,?,?)')
     .run(uid, hash, bio, now(), now());
-  res.json({ token: createSession(Number(info.lastInsertRowid)), me: { uid, bio } });
+  res.json({ token: createSession(Number(info.lastInsertRowid)), me: { uid, bio, color: null } });
 });
 
 app.post('/api/login', (req, res) => {
@@ -165,7 +175,7 @@ app.post('/api/login', (req, res) => {
   const u = db.prepare('SELECT * FROM users WHERE uid = ?').get(uid);
   if (!u || !bcrypt.compareSync(password, u.hash))
     return res.status(401).json({ error: 'Wrong ID or password' });
-  res.json({ token: createSession(Number(u.id)), me: { uid: u.uid, bio: u.bio } });
+  res.json({ token: createSession(Number(u.id)), me: { uid: u.uid, bio: u.bio, color: u.color == null ? null : Number(u.color) } });
 });
 
 app.post('/api/logout', auth, (req, res) => {
@@ -174,14 +184,14 @@ app.post('/api/logout', auth, (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/me', auth, (req, res) => res.json({ uid: req.user.uid, bio: req.user.bio }));
+app.get('/api/me', auth, (req, res) => res.json({ uid: req.user.uid, bio: req.user.bio, color: req.user.color }));
 
 // Dashboard list: ONLY people you have chatted with (your contacts)
 app.get('/api/chats', auth, (req, res) => {
   const cut = now() - TTL_MS;
   const pair = `((m.from_id=@me AND m.to_id=u.id) OR (m.from_id=u.id AND m.to_id=@me)) AND m.created_at>@cut`;
   const rows = db.prepare(`
-    SELECT u.uid, u.bio,
+    SELECT u.uid, u.bio, u.color,
       (SELECT text FROM messages m WHERE ${pair} ORDER BY m.id DESC LIMIT 1) AS last_text,
       (SELECT created_at FROM messages m WHERE ${pair} ORDER BY m.id DESC LIMIT 1) AS last_at,
       (SELECT COUNT(*) FROM messages m WHERE m.from_id=u.id AND m.to_id=@me
@@ -198,7 +208,7 @@ app.get('/api/chats', auth, (req, res) => {
 // Message history for one conversation (last 24h only).
 // Works for a contact, or for a brand-new person whose exact ID you typed.
 app.get('/api/messages/:uid', auth, (req, res) => {
-  const other = db.prepare('SELECT id, uid, bio FROM users WHERE uid = ?').get(String(req.params.uid).trim().toUpperCase());
+  const other = db.prepare('SELECT id, uid, bio, color FROM users WHERE uid = ?').get(String(req.params.uid).trim().toUpperCase());
   if (!other || isBlocked(req.user.id, Number(other.id))) return res.status(404).json({ error: 'User not found' });
   if (Number(other.id) === req.user.id) return res.status(400).json({ error: 'That is your own ID' });
 
@@ -216,7 +226,7 @@ app.get('/api/messages/:uid', auth, (req, res) => {
     .run(now(), other.id, req.user.id);
   res.json({
     // online status is revealed only for contacts
-    user: { uid: other.uid, bio: other.bio, contact, online: contact ? isOnline(other.uid) : false },
+    user: { uid: other.uid, bio: other.bio, color: other.color == null ? null : Number(other.color), contact, online: contact ? isOnline(other.uid) : false },
     messages: rows.map((r) => ({ ...r })),
   });
 });
@@ -236,20 +246,39 @@ app.post('/api/block/:uid', auth, (req, res) => {
   res.json({ ok: true });
 });
 
-// Random chat: picks ONE random person you have not talked to yet (prefers online).
-// It reveals only that single ID, never a list.
-app.get('/api/random', auth, (req, res) => {
-  if (limited('rand:' + req.user.id, 40)) return res.status(429).json({ error: 'Too many tries. Try later.' });
-  const all = db.prepare(`
-    SELECT uid FROM users WHERE id != @me
-      AND id NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id=@me)
-      AND id NOT IN (SELECT blocker_id FROM blocks WHERE blocked_id=@me)
-      AND id NOT IN (SELECT contact_id FROM contacts WHERE owner_id=@me)`)
-    .all({ me: req.user.id }).map((r) => r.uid);
-  if (!all.length) return res.status(404).json({ error: 'No new people available right now' });
-  const online = all.filter(isOnline);
-  const pool = online.length ? online : all;
-  res.json({ uid: pool[Math.floor(Math.random() * pool.length)] });
+// Update my profile: ID (username), tagline and avatar colour
+app.put('/api/profile', auth, (req, res) => {
+  if (limited('profile:' + req.user.id, 10)) return res.status(429).json({ error: 'Too many changes. Try later.' });
+  const b = req.body || {};
+  let uid = req.user.uid;
+  let bio = req.user.bio;
+  let color = req.user.color;
+
+  if (b.uid !== undefined) {
+    uid = String(b.uid).trim().toUpperCase();
+    if (!UID_RE.test(uid)) return res.status(400).json({ error: 'ID: 3–20 letters, numbers or _' });
+    const taken = db.prepare('SELECT id FROM users WHERE uid = ?').get(uid);
+    if (taken && Number(taken.id) !== req.user.id) return res.status(409).json({ error: 'That ID is taken' });
+  }
+  if (b.bio !== undefined) bio = String(b.bio).trim().slice(0, 60);
+  if (b.color !== undefined) {
+    if (b.color === null) color = null;
+    else {
+      const c = Number(b.color);
+      if (!Number.isInteger(c) || c < 0 || c > 359) return res.status(400).json({ error: 'Invalid colour' });
+      color = c;
+    }
+  }
+
+  const oldUid = req.user.uid;
+  db.prepare('UPDATE users SET uid=?, bio=?, color=? WHERE id=?').run(uid, bio, color, req.user.id);
+
+  if (uid !== oldUid) {
+    // Tell contacts about the new ID, then drop my live connections so they reconnect under it
+    contactUids(req.user.id).forEach((c) => io.to(`u:${c}`).emit('contact:renamed', { from: oldUid, to: uid }));
+    io.in(`u:${oldUid}`).disconnectSockets(true);
+  }
+  res.json({ uid, bio, color });
 });
 
 /* ------------------------------- Socket.io ------------------------------ */
