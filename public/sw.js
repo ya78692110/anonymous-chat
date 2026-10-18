@@ -1,5 +1,5 @@
 // Minimal service worker: makes the app installable and caches the static shell.
-const CACHE = 'anon-shell-v2';
+const CACHE = 'anon-shell-v3';
 const SHELL = ['/', '/index.html', '/style.css', '/app.js', '/manifest.json', '/icon.svg'];
 
 self.addEventListener('install', (e) => {

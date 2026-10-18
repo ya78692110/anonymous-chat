@@ -10,6 +10,7 @@
     online: new Set(),   // online status of MY contacts only (server never sends anyone else)
     chats: [],
     current: null,       // uid of open conversation
+    currentColor: null,
     currentIsContact: false,
     mode: 'login',
     typingTimer: null,
@@ -28,11 +29,12 @@
     for (const c of s) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); }
     return h >>> 0;
   }
-  function fillAvatar(node, uid) {
+  const HUES = [150, 170, 195, 215, 265, 330, 25, 48]; // avatar colour options
+  function fillAvatar(node, uid, color) {
     const NS = 'http://www.w3.org/2000/svg';
     const seed = hashStr(uid + '#glyph');
     node.textContent = '';
-    node.style.setProperty('--h', String(hashStr(uid) % 360));
+    node.style.setProperty('--h', String(color != null ? color : HUES[hashStr(uid) % HUES.length]));
     const svg = document.createElementNS(NS, 'svg');
     svg.setAttribute('viewBox', '0 0 5 5');
     svg.setAttribute('aria-hidden', 'true');
@@ -121,7 +123,6 @@
     if (state.socket) { state.socket.disconnect(); state.socket = null; }
     show('auth');
   }
-  $('logout').addEventListener('click', () => signOut(false));
 
   /* ------------------------------- socket ------------------------------- */
   function connectSocket() {
@@ -130,6 +131,19 @@
     state.socket = s;
 
     s.on('connect_error', (err) => { if (err.message === 'unauthorized') signOut(true); });
+    // The server drops our connection after an ID change; reconnect under the new ID
+    s.on('disconnect', (reason) => { if (reason === 'io server disconnect') s.connect(); });
+
+    // A contact changed their ID
+    s.on('contact:renamed', ({ from, to }) => {
+      if (state.online.delete(from)) state.online.add(to);
+      if (state.current === from) {
+        state.current = to;
+        $('chat-name').textContent = to;
+        fillAvatar($('chat-avatar'), to, state.currentColor);
+      }
+      loadChats();
+    });
 
     // Initial list: which of MY contacts are online right now
     s.on('presence', ({ online }) => {
@@ -181,10 +195,10 @@
     state.chats.forEach((c) => {
       const li = el('li');
       const btn = el('button', 'chat-item');
-      const av = fillAvatar(el('div', 'avatar'), c.uid);
+      const av = fillAvatar(el('div', 'avatar'), c.uid, c.color);
       av.append(el('i', 'dot' + (state.online.has(c.uid) ? ' on' : '')));
       const body = el('div', 'item-body');
-      body.append(el('div', 'item-name', c.uid), el('div', 'item-sub', c.last_text || c.bio || 'Say hello'));
+      body.append(el('div', 'item-name', c.uid), el('div', 'item-sub', c.last_text || c.bio || 'No messages yet'));
       const side = el('div', 'item-side');
       side.append(el('span', 'item-time', listTime(c.last_at)));
       if (c.unread > 0) side.append(el('span', 'unread', String(c.unread)));
@@ -203,11 +217,6 @@
     openChat(uid).then((ok) => { if (ok) input.value = ''; });
   });
 
-  $('random-chat').addEventListener('click', async () => {
-    try { const { uid } = await api('/api/random'); openChat(uid); }
-    catch (err) { toast(err.message); }
-  });
-
   /* ------------------------------ chat room ------------------------------ */
   let lastDay = null;
   function renderChatStatus() {
@@ -215,8 +224,8 @@
     const on = state.currentIsContact && state.online.has(state.current);
     $('chat-dot').classList.toggle('on', on);
     $('chat-status').textContent = state.currentIsContact
-      ? `Anonymous · ${on ? 'Online' : 'Offline'}`
-      : 'Anonymous';
+      ? on ? 'Online' : 'Offline'
+      : 'Not in your contacts yet';
   }
   function appendMessage(m) {
     const thread = $('thread');
@@ -238,7 +247,8 @@
         if (data.user.online) state.online.add(state.current); else state.online.delete(state.current);
       }
       $('chat-name').textContent = data.user.uid;
-      fillAvatar($('chat-avatar'), data.user.uid);
+      state.currentColor = data.user.color;
+      fillAvatar($('chat-avatar'), data.user.uid, data.user.color);
       $('thread').textContent = ''; lastDay = null;
       data.messages.forEach(appendMessage);
       renderChatStatus();
@@ -290,11 +300,56 @@
     catch (err) { toast(err.message); }
   });
 
+
+  /* ------------------------------- profile ------------------------------- */
+  const profile = $('profile');
+  let pfColor = null;
+  function renderMe() {
+    $('me-name').textContent = state.me.uid;
+    fillAvatar($('me-avatar'), state.me.uid, state.me.color);
+  }
+  function renderSwatches() {
+    const box = $('pf-colors'); box.textContent = '';
+    HUES.forEach((h) => {
+      const b = el('button', 'swatch' + (pfColor === h ? ' on' : ''));
+      b.type = 'button'; b.style.setProperty('--h', String(h)); b.setAttribute('aria-label', `Colour ${h}`);
+      b.addEventListener('click', () => { pfColor = h; renderSwatches(); });
+      box.append(b);
+    });
+  }
+  $('me-btn').addEventListener('click', () => {
+    $('pf-uid').value = state.me.uid;
+    $('pf-bio').value = state.me.bio || '';
+    $('pf-error').textContent = '';
+    pfColor = state.me.color != null ? state.me.color : HUES[hashStr(state.me.uid) % HUES.length];
+    renderSwatches();
+    profile.hidden = false;
+  });
+  $('pf-cancel').addEventListener('click', () => (profile.hidden = true));
+  profile.addEventListener('click', (e) => { if (e.target === profile) profile.hidden = true; });
+  $('pf-logout').addEventListener('click', () => { profile.hidden = true; signOut(false); });
+  $('profile-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = $('pf-save'); btn.disabled = true; $('pf-error').textContent = '';
+    try {
+      const data = await api('/api/profile', {
+        method: 'PUT',
+        body: { uid: $('pf-uid').value, bio: $('pf-bio').value, color: pfColor },
+      });
+      state.me = { uid: data.uid, bio: data.bio, color: data.color };
+      renderMe(); profile.hidden = true; toast('Profile updated');
+      loadChats();
+    } catch (err) {
+      $('pf-error').textContent = err.message;
+    } finally { btn.disabled = false; }
+  });
+
   /* -------------------------------- boot -------------------------------- */
   async function start() {
     if (!state.me) {
       try { state.me = await api('/api/me'); } catch (_) { return show('auth'); }
     }
+    renderMe();
     connectSocket();
     show('list');
     await loadChats();
