@@ -26,6 +26,8 @@ const MOBILE_APP_ORIGINS = new Set([
 const TTL_MS = 24 * 60 * 60 * 1000; // messages disappear after 24 hours
 const UID_RE = /^[A-Za-z0-9_]{3,20}$/;
 const MAX_MSG = 1000;
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 
 /* ------------------------------ Database ------------------------------ */
 const db = new DatabaseSync(path.join(__dirname, 'chat.db'));
@@ -50,6 +52,9 @@ db.exec(`
     from_id INTEGER NOT NULL,
     to_id INTEGER NOT NULL,
     text TEXT NOT NULL,
+    type TEXT NOT NULL DEFAULT 'text',
+    mime_type TEXT,
+    image BLOB,
     created_at INTEGER NOT NULL,
     read_at INTEGER
   );
@@ -71,6 +76,10 @@ db.exec(`
 if (!db.prepare('PRAGMA table_info(users)').all().some((column) => column.name === 'avatar_color')) {
   db.exec("ALTER TABLE users ADD COLUMN avatar_color TEXT NOT NULL DEFAULT 'jade'");
 }
+const messageColumns = new Set(db.prepare('PRAGMA table_info(messages)').all().map((column) => column.name));
+if (!messageColumns.has('type')) db.exec("ALTER TABLE messages ADD COLUMN type TEXT NOT NULL DEFAULT 'text'");
+if (!messageColumns.has('mime_type')) db.exec('ALTER TABLE messages ADD COLUMN mime_type TEXT');
+if (!messageColumns.has('image')) db.exec('ALTER TABLE messages ADD COLUMN image BLOB');
 
 // Backfill contacts for conversations that existed before this update
 db.exec(`
@@ -214,7 +223,7 @@ app.get('/api/chats', auth, (req, res) => {
   const pair = `((m.from_id=@me AND m.to_id=u.id) OR (m.from_id=u.id AND m.to_id=@me)) AND m.created_at>@cut`;
   const rows = db.prepare(`
     SELECT u.uid, u.bio, u.avatar_color AS avatarColor,
-      (SELECT text FROM messages m WHERE ${pair} ORDER BY m.id DESC LIMIT 1) AS last_text,
+      (SELECT CASE WHEN m.type='image' THEN 'Photo' ELSE m.text END FROM messages m WHERE ${pair} ORDER BY m.id DESC LIMIT 1) AS last_text,
       (SELECT created_at FROM messages m WHERE ${pair} ORDER BY m.id DESC LIMIT 1) AS last_at,
       (SELECT COUNT(*) FROM messages m WHERE m.from_id=u.id AND m.to_id=@me
          AND m.read_at IS NULL AND m.created_at>@cut) AS unread
@@ -240,7 +249,7 @@ app.get('/api/messages/:uid', auth, (req, res) => {
     return res.status(429).json({ error: 'Too many lookups. Try later.' });
 
   const rows = db.prepare(`
-    SELECT m.id, fu.uid AS "from", tu.uid AS "to", m.text, m.created_at AS at
+    SELECT m.id, fu.uid AS "from", tu.uid AS "to", m.text, m.type, m.created_at AS at
     FROM messages m JOIN users fu ON fu.id=m.from_id JOIN users tu ON tu.id=m.to_id
     WHERE ((m.from_id=@me AND m.to_id=@o) OR (m.from_id=@o AND m.to_id=@me)) AND m.created_at>@cut
     ORDER BY m.id ASC`).all({ me: req.user.id, o: other.id, cut: now() - TTL_MS });
@@ -251,6 +260,41 @@ app.get('/api/messages/:uid', auth, (req, res) => {
     user: { uid: other.uid, bio: other.bio, avatarColor: other.avatar_color, contact, online: contact ? isOnline(other.uid) : false },
     messages: rows.map((r) => ({ ...r })),
   });
+});
+
+app.post('/api/messages/:uid/image', auth,
+  express.raw({ type: [...IMAGE_TYPES], limit: MAX_IMAGE_BYTES }), (req, res) => {
+    const mimeType = String(req.headers['content-type'] || '').split(';')[0].toLowerCase();
+    if (!IMAGE_TYPES.has(mimeType)) return res.status(415).json({ error: 'Choose a JPG, PNG, WebP or GIF image' });
+    if (!req.body?.length) return res.status(400).json({ error: 'Image is empty' });
+
+    const to = db.prepare('SELECT id, uid FROM users WHERE uid = ?').get(String(req.params.uid).trim().toUpperCase());
+    if (!to || Number(to.id) === req.user.id) return res.status(404).json({ error: 'User not found' });
+    if (isBlocked(req.user.id, Number(to.id))) return res.status(403).json({ error: 'You cannot message this user' });
+
+    const sentAt = now();
+    addContacts(req.user.id, Number(to.id));
+    const info = db.prepare(`INSERT INTO messages (from_id, to_id, text, type, mime_type, image, created_at)
+      VALUES (?, ?, '', 'image', ?, ?, ?)`)
+      .run(req.user.id, Number(to.id), mimeType, req.body, sentAt);
+    const msg = { id: Number(info.lastInsertRowid), from: req.user.uid, to: to.uid, text: '', type: 'image', at: sentAt };
+    io.to(`u:${to.uid}`).to(`u:${req.user.uid}`).emit('message:new', msg);
+    res.status(201).json({ msg });
+  });
+
+app.get('/api/media/:id', auth, (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isSafeInteger(id) || id < 1) return res.status(404).json({ error: 'Image not found' });
+  const media = db.prepare(`SELECT from_id, to_id, mime_type, image FROM messages
+    WHERE id=? AND type='image'`).get(id);
+  if (!media || (media.from_id !== req.user.id && media.to_id !== req.user.id)
+      || isBlocked(req.user.id, media.from_id === req.user.id ? media.to_id : media.from_id)) {
+    return res.status(404).json({ error: 'Image not found' });
+  }
+  res.setHeader('Content-Type', media.mime_type);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Cache-Control', 'private, max-age=300');
+  res.send(Buffer.from(media.image));
 });
 
 app.delete('/api/messages/:uid', auth, (req, res) => {
