@@ -2,15 +2,19 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const TOKEN_KEY = 'anon_token';
+  const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+  const AVATAR_COLORS = ['jade', 'gold', 'coral', 'sky', 'violet', 'mint'];
+  const SERVER_URL = (window.ANONYMOUS_CHAT_SERVER_URL || '').replace(/\/+$/, '');
+  const serverPath = (path) => SERVER_URL ? new URL(path, SERVER_URL).toString() : path;
 
   const state = {
     token: localStorage.getItem(TOKEN_KEY),
     me: null,
+    preview: false,
     socket: null,
     online: new Set(),   // online status of MY contacts only (server never sends anyone else)
     chats: [],
     current: null,       // uid of open conversation
-    currentColor: null,
     currentIsContact: false,
     mode: 'login',
     typingTimer: null,
@@ -29,12 +33,12 @@
     for (const c of s) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); }
     return h >>> 0;
   }
-  const HUES = [150, 170, 195, 215, 265, 330, 25, 48]; // avatar colour options
   function fillAvatar(node, uid, color) {
     const NS = 'http://www.w3.org/2000/svg';
     const seed = hashStr(uid + '#glyph');
     node.textContent = '';
-    node.style.setProperty('--h', String(color != null ? color : HUES[hashStr(uid) % HUES.length]));
+    node.style.setProperty('--h', String(hashStr(uid) % 360));
+    node.dataset.color = AVATAR_COLORS.includes(color) ? color : 'jade';
     const svg = document.createElementNS(NS, 'svg');
     svg.setAttribute('viewBox', '0 0 5 5');
     svg.setAttribute('aria-hidden', 'true');
@@ -75,7 +79,7 @@
     clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.hidden = true), 2400);
   }
   async function api(path, opts = {}) {
-    const res = await fetch(path, {
+    const res = await fetch(serverPath(path), {
       method: opts.method || 'GET',
       headers: { 'Content-Type': 'application/json', ...(state.token ? { Authorization: `Bearer ${state.token}` } : {}) },
       body: opts.body ? JSON.stringify(opts.body) : undefined,
@@ -117,33 +121,22 @@
 
   async function signOut(silent) {
     try { if (!silent && state.token) await api('/api/logout', { method: 'POST' }); } catch (_) {}
+    clearMediaUrls();
     localStorage.removeItem(TOKEN_KEY);
     state.token = null; state.me = null; state.current = null;
     state.online = new Set(); state.chats = [];
     if (state.socket) { state.socket.disconnect(); state.socket = null; }
     show('auth');
   }
+  $('logout').addEventListener('click', () => signOut(false));
 
   /* ------------------------------- socket ------------------------------- */
   function connectSocket() {
     if (state.socket) state.socket.disconnect();
-    const s = io({ auth: { token: state.token } });
+    const s = io(SERVER_URL || undefined, { auth: { token: state.token } });
     state.socket = s;
 
     s.on('connect_error', (err) => { if (err.message === 'unauthorized') signOut(true); });
-    // The server drops our connection after an ID change; reconnect under the new ID
-    s.on('disconnect', (reason) => { if (reason === 'io server disconnect') s.connect(); });
-
-    // A contact changed their ID
-    s.on('contact:renamed', ({ from, to }) => {
-      if (state.online.delete(from)) state.online.add(to);
-      if (state.current === from) {
-        state.current = to;
-        $('chat-name').textContent = to;
-        fillAvatar($('chat-avatar'), to, state.currentColor);
-      }
-      loadChats();
-    });
 
     // Initial list: which of MY contacts are online right now
     s.on('presence', ({ online }) => {
@@ -195,10 +188,10 @@
     state.chats.forEach((c) => {
       const li = el('li');
       const btn = el('button', 'chat-item');
-      const av = fillAvatar(el('div', 'avatar'), c.uid, c.color);
+      const av = fillAvatar(el('div', 'avatar'), c.uid, c.avatarColor);
       av.append(el('i', 'dot' + (state.online.has(c.uid) ? ' on' : '')));
       const body = el('div', 'item-body');
-      body.append(el('div', 'item-name', c.uid), el('div', 'item-sub', c.last_text || c.bio || 'No messages yet'));
+      body.append(el('div', 'item-name', c.uid), el('div', 'item-sub', c.last_text || c.bio || 'Say hello'));
       const side = el('div', 'item-side');
       side.append(el('span', 'item-time', listTime(c.last_at)));
       if (c.unread > 0) side.append(el('span', 'unread', String(c.unread)));
@@ -219,22 +212,52 @@
 
   /* ------------------------------ chat room ------------------------------ */
   let lastDay = null;
+  let mediaUrls = [];
+  function clearMediaUrls() {
+    mediaUrls.forEach(URL.revokeObjectURL);
+    mediaUrls = [];
+  }
+  async function loadMessageImage(id, image) {
+    try {
+      const res = await fetch(serverPath(`/api/media/${encodeURIComponent(id)}`), {
+        headers: { Authorization: `Bearer ${state.token}` },
+      });
+      if (res.status === 401) { signOut(true); return; }
+      if (!res.ok) throw new Error('Image unavailable');
+      const url = URL.createObjectURL(await res.blob());
+      if (!image.isConnected) { URL.revokeObjectURL(url); return; }
+      mediaUrls.push(url);
+      image.src = url;
+    } catch (_) {
+      image.alt = 'Image unavailable';
+    }
+  }
   function renderChatStatus() {
     // Online status is shown only for contacts; strangers stay fully anonymous
     const on = state.currentIsContact && state.online.has(state.current);
     $('chat-dot').classList.toggle('on', on);
     $('chat-status').textContent = state.currentIsContact
-      ? on ? 'Online' : 'Offline'
-      : 'Not in your contacts yet';
+      ? `Anonymous · ${on ? 'Online' : 'Offline'}`
+      : 'Anonymous';
   }
   function appendMessage(m) {
     const thread = $('thread');
     const label = dayLabel(m.at);
     if (label !== lastDay) { thread.append(el('div', 'day', label)); lastDay = label; }
     const mine = m.from === state.me.uid;
-    const wrap = el('div', `msg ${mine ? 'out' : 'in'}`);
+    const isImage = m.type === 'image';
+    const wrap = el('div', `msg ${mine ? 'out' : 'in'}${isImage ? ' image' : ''}`);
     wrap.dataset.mid = m.id;
-    wrap.append(el('div', 'bubble', m.text), el('div', 'time', hhmm(m.at)));
+    if (isImage) {
+      const image = el('img', 'message-image');
+      image.alt = 'Shared image';
+      wrap.append(image);
+      if (m.previewUrl) image.src = m.previewUrl;
+      else loadMessageImage(m.id, image);
+    } else {
+      wrap.append(el('div', 'bubble', m.text));
+    }
+    wrap.append(el('div', 'time', hhmm(m.at)));
     thread.append(wrap);
     thread.scrollTop = thread.scrollHeight;
   }
@@ -247,8 +270,9 @@
         if (data.user.online) state.online.add(state.current); else state.online.delete(state.current);
       }
       $('chat-name').textContent = data.user.uid;
-      state.currentColor = data.user.color;
-      fillAvatar($('chat-avatar'), data.user.uid, data.user.color);
+      $('chat-bio').textContent = data.user.bio || '';
+      fillAvatar($('chat-avatar'), data.user.uid, data.user.avatarColor);
+      clearMediaUrls();
       $('thread').textContent = ''; lastDay = null;
       data.messages.forEach(appendMessage);
       renderChatStatus();
@@ -258,11 +282,56 @@
     } catch (err) { toast(err.message); return false; }
   }
   function closeChat() {
+    clearMediaUrls();
     state.current = null; state.currentIsContact = false;
     show('list'); loadChats();
   }
-  $('back').addEventListener('click', closeChat);
-  $('all-chats').addEventListener('click', closeChat);
+  $('back').addEventListener('click', () => state.preview ? exitChatPreview() : closeChat());
+  $('all-chats').addEventListener('click', () => state.preview ? exitChatPreview() : closeChat());
+
+  $('image-btn').addEventListener('click', () => $('image-input').click());
+  $('image-input').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file || !state.current) return;
+    if (file.size > MAX_IMAGE_BYTES) { toast('Image must be 5MB or smaller'); return; }
+    if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(file.type)) {
+      toast('Choose a JPG, PNG, WebP or GIF image'); return;
+    }
+
+    const to = state.current;
+    if (state.preview) {
+      const previewUrl = URL.createObjectURL(file);
+      mediaUrls.push(previewUrl);
+      appendMessage({
+        id: `preview-${Date.now()}`, from: state.me.uid, to,
+        text: '', type: 'image', at: Date.now(), previewUrl,
+      });
+      return;
+    }
+    const button = $('image-btn');
+    button.disabled = true;
+    toast('Sending image…');
+    try {
+      const res = await fetch(serverPath(`/api/messages/${encodeURIComponent(to)}/image`), {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${state.token}`,
+          'Content-Type': file.type,
+        },
+        body: file,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 401) { signOut(true); return; }
+      if (!res.ok) throw new Error(data.error || (res.status === 413 ? 'Image must be 5MB or smaller' : 'Image could not be sent'));
+      if (state.current === to && !document.querySelector(`[data-mid="${data.msg.id}"]`)) appendMessage(data.msg);
+      toast('Image sent');
+    } catch (err) {
+      toast(err.message);
+    } finally {
+      button.disabled = false;
+    }
+  });
 
   $('composer').addEventListener('submit', (e) => {
     e.preventDefault();
@@ -270,6 +339,13 @@
     const text = input.value.trim();
     if (!text || !state.current) return;
     input.value = '';
+    if (state.preview) {
+      appendMessage({
+        id: `preview-${Date.now()}`, from: state.me.uid, to: state.current,
+        text, type: 'text', at: Date.now(),
+      });
+      return;
+    }
     state.socket.emit('message:send', { to: state.current, text }, (res) => {
       if (res?.error) { toast(res.error); input.value = text; return; }
       // The server also broadcasts message:new to us; the data-mid check prevents duplicates.
@@ -291,7 +367,7 @@
   sheet.addEventListener('click', (e) => { if (e.target === sheet) sheet.hidden = true; });
   $('act-clear').addEventListener('click', async () => {
     sheet.hidden = true;
-    try { await api(`/api/messages/${encodeURIComponent(state.current)}`, { method: 'DELETE' }); $('thread').textContent = ''; lastDay = null; toast('Chat cleared'); }
+    try { await api(`/api/messages/${encodeURIComponent(state.current)}`, { method: 'DELETE' }); clearMediaUrls(); $('thread').textContent = ''; lastDay = null; toast('Chat cleared'); }
     catch (err) { toast(err.message); }
   });
   $('act-block').addEventListener('click', async () => {
@@ -300,48 +376,61 @@
     catch (err) { toast(err.message); }
   });
 
-
-  /* ------------------------------- profile ------------------------------- */
-  const profile = $('profile');
-  let pfColor = null;
-  function renderMe() {
-    $('me-name').textContent = state.me.uid;
-    fillAvatar($('me-avatar'), state.me.uid, state.me.color);
+  /* ---------------------------- own profile ----------------------------- */
+  const profileSheet = $('profile-sheet');
+  let selectedColor = 'jade';
+  function renderOwnProfile() {
+    if (!state.me) return;
+    $('my-uid').textContent = state.me.uid;
+    $('my-bio').textContent = state.me.bio || 'Add a tagline';
+    fillAvatar($('my-avatar'), state.me.uid, state.me.avatarColor);
   }
-  function renderSwatches() {
-    const box = $('pf-colors'); box.textContent = '';
-    HUES.forEach((h) => {
-      const b = el('button', 'swatch' + (pfColor === h ? ' on' : ''));
-      b.type = 'button'; b.style.setProperty('--h', String(h)); b.setAttribute('aria-label', `Colour ${h}`);
-      b.addEventListener('click', () => { pfColor = h; renderSwatches(); });
-      box.append(b);
+  function chooseAvatarColor(color) {
+    selectedColor = color;
+    fillAvatar($('profile-avatar'), state.me.uid, color);
+    document.querySelectorAll('.color-swatch').forEach((swatch) => {
+      swatch.setAttribute('aria-pressed', String(swatch.dataset.color === color));
     });
   }
-  $('me-btn').addEventListener('click', () => {
-    $('pf-uid').value = state.me.uid;
-    $('pf-bio').value = state.me.bio || '';
-    $('pf-error').textContent = '';
-    pfColor = state.me.color != null ? state.me.color : HUES[hashStr(state.me.uid) % HUES.length];
-    renderSwatches();
-    profile.hidden = false;
+  $('edit-profile').addEventListener('click', () => {
+    $('profile-error').textContent = '';
+    $('profile-bio').value = state.me.bio || '';
+    $('profile-preview-uid').textContent = state.me.uid;
+    chooseAvatarColor(state.me.avatarColor || 'jade');
+    profileSheet.hidden = false;
   });
-  $('pf-cancel').addEventListener('click', () => (profile.hidden = true));
-  profile.addEventListener('click', (e) => { if (e.target === profile) profile.hidden = true; });
-  $('pf-logout').addEventListener('click', () => { profile.hidden = true; signOut(false); });
-  $('profile-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const btn = $('pf-save'); btn.disabled = true; $('pf-error').textContent = '';
+  document.querySelectorAll('.color-swatch').forEach((swatch) => {
+    swatch.addEventListener('click', () => chooseAvatarColor(swatch.dataset.color));
+  });
+  $('profile-cancel').addEventListener('click', () => { profileSheet.hidden = true; });
+  profileSheet.addEventListener('click', (event) => {
+    if (event.target === profileSheet) profileSheet.hidden = true;
+  });
+  $('profile-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const button = $('profile-save');
+    button.disabled = true;
+    $('profile-error').textContent = '';
     try {
-      const data = await api('/api/profile', {
-        method: 'PUT',
-        body: { uid: $('pf-uid').value, bio: $('pf-bio').value, color: pfColor },
+      state.me = await api('/api/profile', {
+        method: 'POST',
+        body: { bio: $('profile-bio').value, avatarColor: selectedColor },
       });
-      state.me = { uid: data.uid, bio: data.bio, color: data.color };
-      renderMe(); profile.hidden = true; toast('Profile updated');
-      loadChats();
-    } catch (err) {
-      $('pf-error').textContent = err.message;
-    } finally { btn.disabled = false; }
+      renderOwnProfile();
+      profileSheet.hidden = true;
+      toast('Profile updated');
+    } catch (error) {
+      $('profile-error').textContent = error.message;
+    } finally { button.disabled = false; }
+  });
+  $('share-id').addEventListener('click', async () => {
+    const shareData = { title: 'Anonymous chat', text: `Chat with me on Anonymous. My ID is ${state.me.uid}.` };
+    try {
+      if (navigator.share) await navigator.share(shareData);
+      else { await navigator.clipboard.writeText(shareData.text); toast('Your ID is ready to share'); }
+    } catch (error) {
+      if (error.name !== 'AbortError') toast('Could not share your ID');
+    }
   });
 
   /* -------------------------------- boot -------------------------------- */
@@ -349,12 +438,45 @@
     if (!state.me) {
       try { state.me = await api('/api/me'); } catch (_) { return show('auth'); }
     }
-    renderMe();
+    renderOwnProfile();
     connectSocket();
     show('list');
     await loadChats();
   }
 
+  function startChatPreview() {
+    state.preview = true;
+    state.me = { uid: 'YOU' };
+    state.current = 'ANON_407';
+    $('chat-name').textContent = state.current;
+    fillAvatar($('chat-avatar'), state.current);
+    $('chat-dot').classList.remove('on');
+    $('chat-status').textContent = 'Local preview';
+    document.querySelector('.badge').textContent = 'Preview';
+    document.querySelector('.sub-text').textContent = 'Messages stay on this device';
+    $('all-chats').textContent = 'Log in / Create ID';
+    $('thread').textContent = '';
+    lastDay = null;
+    appendMessage({
+      id: 'preview-in-1', from: state.current, to: state.me.uid,
+      text: 'This is a local chat preview.', type: 'text', at: Date.now() - 60000,
+    });
+    appendMessage({
+      id: 'preview-out-1', from: state.me.uid, to: state.current,
+      text: 'Use the image button to try sending a photo.', type: 'text', at: Date.now() - 30000,
+    });
+    show('chat');
+  }
+
+  function exitChatPreview() {
+    const url = new URL(location.href);
+    url.searchParams.delete('preview');
+    location.replace(url);
+  }
+
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
-  state.token ? start() : show('auth');
+  const localPreview = new URLSearchParams(location.search).get('preview') === 'chat'
+    && (location.protocol === 'file:' || ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname));
+  if (localPreview) startChatPreview();
+  else state.token ? start() : show('auth');
 })();

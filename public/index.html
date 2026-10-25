@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
-  <meta name="theme-color" content="#000000">
+  <meta name="theme-color" content="#101413">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -13,7 +13,7 @@
   <link rel="apple-touch-icon" href="icon.svg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -24,12 +24,12 @@
       <div class="auth-wrap">
         <div class="brand">
           <span class="logo">
-            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5c-4.1 0-7 3-7 7.2v10.6c0 .8.9 1.2 1.5.7l1.7-1.5 1.9 1.7c.4.4 1 .4 1.4 0l1.5-1.4 1.5 1.4c.4.4 1 .4 1.4 0l1.9-1.7 1.7 1.5c.6.5 1.5.1 1.5-.7V9.7c0-4.2-2.9-7.2-7-7.2z"/><circle cx="9.3" cy="10.5" r="1.4" fill="#03140c"/><circle cx="14.7" cy="10.5" r="1.4" fill="#03140c"/></svg>
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5c-4.1 0-7 3-7 7.2v10.6c0 .8.9 1.2 1.5.7l1.7-1.5 1.9 1.7c.4.4 1 .4 1.4 0l1.5-1.4 1.5 1.4c.4.4 1 .4 1.4 0l1.9-1.7 1.7 1.5c.6.5 1.5.1 1.5-.7V9.7c0-4.2-2.9-7.2-7-7.2z"/><circle cx="9.3" cy="10.5" r="1.4" fill="#0b1b19"/><circle cx="14.7" cy="10.5" r="1.4" fill="#0b1b19"/></svg>
           </span>
           <span>Anonymous</span>
         </div>
-        <h1 class="title">Private conversations.</h1>
-        <p class="auth-sub">Choose an ID and a password to get started. No phone number or email required.</p>
+        <h1 class="title">Talk freely.<br>Stay unknown.</h1>
+        <p class="auth-sub">Choose an ID and a password. That's all you need to start chatting.</p>
 
         <div class="tabs" role="tablist">
           <button class="tab active" data-mode="login" role="tab">Log in</button>
@@ -48,7 +48,7 @@
           </label>
           <label class="field" id="bio-field" hidden>
             <span>Tagline (optional)</span>
-            <input id="auth-bio" type="text" placeholder="Shown to people you chat with" maxlength="60">
+            <input id="auth-bio" type="text" placeholder="A line others will see" maxlength="60">
           </label>
           <p id="auth-error" class="error" role="alert"></p>
           <button id="auth-submit" class="btn-primary" type="submit">Log in</button>
@@ -56,7 +56,7 @@
 
         <p class="footnote">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
-          Your identity stays private.
+          No phone number. No email. Your identity stays hidden.
         </p>
       </div>
     </section>
@@ -67,23 +67,33 @@
         <div class="row-between">
           <div class="brand">
             <span class="logo">
-              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5c-4.1 0-7 3-7 7.2v10.6c0 .8.9 1.2 1.5.7l1.7-1.5 1.9 1.7c.4.4 1 .4 1.4 0l1.5-1.4 1.5 1.4c.4.4 1 .4 1.4 0l1.9-1.7 1.7 1.5c.6.5 1.5.1 1.5-.7V9.7c0-4.2-2.9-7.2-7-7.2z"/><circle cx="9.3" cy="10.5" r="1.4" fill="#03140c"/><circle cx="14.7" cy="10.5" r="1.4" fill="#03140c"/></svg>
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5c-4.1 0-7 3-7 7.2v10.6c0 .8.9 1.2 1.5.7l1.7-1.5 1.9 1.7c.4.4 1 .4 1.4 0l1.5-1.4 1.5 1.4c.4.4 1 .4 1.4 0l1.9-1.7 1.7 1.5c.6.5 1.5.1 1.5-.7V9.7c0-4.2-2.9-7.2-7-7.2z"/><circle cx="9.3" cy="10.5" r="1.4" fill="#0b1b19"/><circle cx="14.7" cy="10.5" r="1.4" fill="#0b1b19"/></svg>
             </span>
             <span>Anonymous</span>
           </div>
-          <button id="me-btn" class="me-btn" aria-label="Edit profile">
-            <div id="me-avatar" class="avatar"></div>
-            <div class="me-text"><div id="me-name" class="me-name">—</div><div class="me-sub">Edit profile</div></div>
-          </button>
+          <button id="logout" class="link-btn">Log out</button>
         </div>
         <div class="row-between align-end">
           <h1 class="title">Chats</h1>
           <span id="online-count" class="meta">0 online</span>
         </div>
+        <div class="my-profile">
+          <div id="my-avatar" class="avatar"></div>
+          <div class="my-profile-copy">
+            <strong id="my-uid">Your ID</strong>
+            <span id="my-bio">Add a tagline</span>
+          </div>
+          <button id="share-id" class="icon-btn" type="button" aria-label="Share your ID" title="Share your ID">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.7 10.7 6.6-4.4M8.7 13.3l6.6 4.4"/></svg>
+          </button>
+          <button id="edit-profile" class="icon-btn" type="button" aria-label="Customize profile" title="Customize profile">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="m19.4 15 .1.1 1.4 1.1-1.4 2.4-1.7-.7a8 8 0 0 1-1.7 1l-.3 1.8h-2.8l-.3-1.8a8 8 0 0 1-1.7-1l-1.7.7-1.4-2.4 1.4-1.1a8 8 0 0 1 0-2l-1.4-1.1 1.4-2.4 1.7.7a8 8 0 0 1 1.7-1l.3-1.8h2.8l.3 1.8a8 8 0 0 1 1.7 1l1.7-.7 1.4 2.4-1.4 1.1a8 8 0 0 1 0 2Z"/></svg>
+          </button>
+        </div>
         <form id="find-form" class="find-form" autocomplete="off">
           <div class="find-box">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
-            <input id="find-uid" type="text" placeholder="Enter an exact ID"
+            <input id="find-uid" type="text" placeholder="Find someone by exact ID"
                    maxlength="20" autocapitalize="characters" spellcheck="false">
           </div>
           <button type="submit">Chat</button>
@@ -95,8 +105,8 @@
         <div class="empty-icon">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.5 8.5 0 0 1-3.8-.9L3 21l2-5.2a8.4 8.4 0 1 1 16-4.3z"/></svg>
         </div>
-        <strong>No conversations yet</strong>
-        <span>Enter a person's exact ID above to start a chat.</span>
+        <strong>No chats yet</strong>
+        <span>Share your ID or enter someone's ID above to start a private chat.</span>
       </div>
 
       <footer class="list-foot">
@@ -117,6 +127,7 @@
           <div id="chat-avatar" class="avatar"></div>
           <div class="who-text">
             <div id="chat-name" class="name">—</div>
+            <div id="chat-bio" class="who-tagline"></div>
             <div class="status"><i id="chat-dot" class="dot"></i><span id="chat-status">Anonymous</span></div>
           </div>
         </div>
@@ -127,14 +138,18 @@
 
       <div class="subbar">
         <span class="badge">Private</span>
-        <span class="sub-text">Messages are deleted after 24 hours</span>
+        <span class="sub-text">Messages disappear after 24 hours</span>
         <button id="all-chats" class="link-btn right">All chats</button>
       </div>
 
       <div id="thread" class="thread" aria-live="polite"></div>
 
       <form id="composer" class="composer" autocomplete="off">
-        <input id="msg-input" type="text" placeholder="Type a message" maxlength="1000" enterkeyhint="send">
+        <button id="image-btn" class="icon-btn image-btn" type="button" aria-label="Send image" title="Send image">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+        </button>
+        <input id="image-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif" hidden>
+        <input id="msg-input" type="text" placeholder="Write a message" maxlength="1000" enterkeyhint="send">
         <button class="send-btn" type="submit" aria-label="Send">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
         </button>
@@ -150,24 +165,31 @@
       </div>
     </div>
 
-    <!-- ============ PROFILE SHEET ============ -->
-    <div id="profile" class="sheet" hidden>
-      <form id="profile-form" class="sheet-card" autocomplete="off">
-        <div class="sheet-title">Edit profile</div>
-        <label class="field">
-          <span>Your ID</span>
-          <input id="pf-uid" type="text" maxlength="20" autocapitalize="characters" spellcheck="false" required>
-        </label>
-        <p class="hint">3–20 letters, numbers or underscore. People you already chat with will see your new ID.</p>
-        <label class="field">
+    <div id="profile-sheet" class="sheet" hidden>
+      <form id="profile-form" class="sheet-card profile-card">
+        <h2>Customize profile</h2>
+        <div class="profile-preview">
+          <div id="profile-avatar" class="avatar"></div>
+          <div><strong id="profile-preview-uid"></strong><span>Visible to people you chat with</span></div>
+        </div>
+        <label class="field profile-bio-field">
           <span>Tagline</span>
-          <input id="pf-bio" type="text" maxlength="60" placeholder="Optional">
+          <input id="profile-bio" type="text" maxlength="60" placeholder="A line others will see">
         </label>
-        <div class="field"><span>Avatar colour</span><div id="pf-colors" class="swatches"></div></div>
-        <p id="pf-error" class="error" role="alert"></p>
-        <button id="pf-save" class="btn-primary" type="submit">Save changes</button>
-        <button id="pf-logout" class="sheet-btn danger" type="button">Log out</button>
-        <button id="pf-cancel" class="sheet-btn muted" type="button">Close</button>
+        <fieldset class="color-field">
+          <legend>Avatar color</legend>
+          <div class="color-options">
+            <button class="color-swatch" type="button" data-color="jade" aria-label="Jade" aria-pressed="false"></button>
+            <button class="color-swatch" type="button" data-color="gold" aria-label="Gold" aria-pressed="false"></button>
+            <button class="color-swatch" type="button" data-color="coral" aria-label="Coral" aria-pressed="false"></button>
+            <button class="color-swatch" type="button" data-color="sky" aria-label="Sky" aria-pressed="false"></button>
+            <button class="color-swatch" type="button" data-color="violet" aria-label="Violet" aria-pressed="false"></button>
+            <button class="color-swatch" type="button" data-color="mint" aria-label="Mint" aria-pressed="false"></button>
+          </div>
+        </fieldset>
+        <p id="profile-error" class="error" role="alert"></p>
+        <button id="profile-save" class="btn-primary" type="submit">Save changes</button>
+        <button id="profile-cancel" class="sheet-btn muted" type="button">Cancel</button>
       </form>
     </div>
 
@@ -175,6 +197,7 @@
   </main>
 
   <script src="/socket.io/socket.io.js"></script>
+  <script src="app-config.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
